@@ -15,6 +15,7 @@ common common
         hspec-core,
         filepath,
         directory,
+        process,
         typed-process,
         temporary,
         text,

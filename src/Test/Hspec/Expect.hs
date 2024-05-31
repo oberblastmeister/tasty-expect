@@ -1,39 +1,27 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# OPTIONS_GHC -fno-full-laziness #-}
 
--- |
--- Module      : Test.Hspec.Golden
--- Description : Golden tests for Hspec
--- Copyright   : Stack Builders (c), 2019-2020
--- License     : MIT
--- Maintainer  : cmotoche@stackbuilders.com
--- Stability   : experimental
--- Portability : portable
---
--- Golden tests store the expected output in a separated file. Each time a golden test
--- is executed the output of the subject under test (SUT) is compared with the
--- expected output. If the output of the SUT changes then the test will fail until
--- the expected output is updated. We expose 'defaultGolden' for output of
--- type @String@. If your SUT has a different output, you can use 'Golden'.
 module Test.Hspec.Expect
   ( expect,
     assertEq,
     Expect (..),
+    ExpectExample (..),
+    test,
   )
 where
 
 import Control.Concurrent.MVar (MVar)
 import Control.Concurrent.MVar qualified as MVar
-import Control.Exception
 import Control.Monad (unless)
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Maybe (fromJust)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as T.IO
-import GHC.Stack (HasCallStack)
 import Language.Haskell.TH qualified as TH
 import Language.Haskell.TH.Quote qualified as TH
 import Language.Haskell.TH.Syntax qualified as TH
@@ -41,27 +29,14 @@ import System.Environment (lookupEnv)
 import System.IO qualified as IO
 import System.IO.Temp (withSystemTempFile)
 import System.IO.Unsafe (unsafePerformIO)
-import System.Process.Typed
+import System.Process qualified as P
+import Test.Hspec.Core.Spec
 
 data Runtime = Runtime
 
 rt :: MVar Runtime
 rt = unsafePerformIO $ MVar.newMVar Runtime
 {-# NOINLINE rt #-}
-
-changeList :: (Monad m) => (Int, Int) -> ([a] -> m [a]) -> [a] -> m [a]
-changeList pos swap list = do
-  let (before, stuff) = splitAt (fst pos) list
-  let (stuff', after) = splitAt (snd pos - fst pos + 1) stuff
-  x <- swap stuff'
-  pure $ before <> x <> after
-
-changeText :: (Monad m) => (Int, Int) -> (Text -> m Text) -> Text -> m Text
-changeText pos swap text = do
-  let (x, rest) = T.splitAt (fst pos) text
-  let (rest', y) = T.splitAt (snd pos - fst pos + 1) rest
-  res <- swap rest'
-  pure $ x <> res <> y
 
 assertIO :: (HasCallStack) => Bool -> IO ()
 assertIO x =
@@ -84,8 +59,8 @@ update expect new rt = do
     (lineStart : linesAfterStart) -> do
       assertIO (startChar < T.length lineStart)
       let (prev, rest) = T.splitAt startChar lineStart
-      putStrLn $ "lineStart: " <> show lineStart
-      putStrLn $ "rest: " <> show rest
+      -- putStrLn $ "lineStart: " <> show lineStart
+      -- putStrLn $ "rest: " <> show rest
       pure $
         T.concat before
           <> prev
@@ -98,31 +73,7 @@ update expect new rt = do
     _ -> error "wrong"
   T.IO.writeFile (expectFile expect) res
 
--- res <- do
---   assertIO $ startLine <= endLine
---   assertIO $ (startLine < fileLinesLen)
---   assertIO (endLine < fileLinesLen)
--- changeList
---   (startLine, endLine)
---   ( \lines -> do
---       if length lines == 1
---         then do
---           res <- changeText (startChar, endChar) (\_ -> pure new) (head lines)
---           pure [res]
---         else do
---           let ([firstLine], lines') = splitAt 1 lines
---           let (_middleLines, [lastLine]) = splitAt (length lines' - 1) lines'
---           putStrLn $ "startChar: " ++ show startChar
---           putStrLn $ "len: " ++ show (T.length firstLine)
---           assertIO (startChar < T.length firstLine)
---           assertIO (endChar < T.length lastLine)
---           let firstLine' = T.take startChar firstLine
---           let lastLine' = T.drop (endChar + 1) lastLine
---           pure [firstLine', new <> T.pack "|]", lastLine']
---   )
---   fileLines
-
-diffString :: String -> String -> IO ()
+diffString :: String -> String -> IO String
 diffString s s' = do
   withSystemTempFile "expect" $ \fp h -> do
     IO.hPutStr h (s ++ "\n")
@@ -130,21 +81,15 @@ diffString s s' = do
     withSystemTempFile "expect" $ \fp' h' -> do
       IO.hPutStr h' (s' ++ "\n")
       IO.hClose h'
-      runGitDiff fp fp'
+      runGitDiff' fp fp'
 
-runGitDiff :: FilePath -> FilePath -> IO ()
-runGitDiff p p' = do
-  let gitConfig = setStderr inherit $ setStdout inherit $ gitDiffProc p p'
-  code <- runProcess gitConfig
-  case code of
-    ExitSuccess -> return ()
-    (ExitFailure 1) -> return ()
-    _ -> throwIO $ userError "git diff did not return 0 or 1"
-
-gitDiffProc :: FilePath -> FilePath -> ProcessConfig () () ()
-gitDiffProc p p' =
-  -- proc "git" ["-c", "color.diff=always", "--no-pager", "diff", "--no-index", p, p']
-  proc "delta" [p, p']
+runGitDiff' :: FilePath -> FilePath -> IO String
+runGitDiff' p p' = do
+  -- P.readProcess "git" ["-c", "color.diff=always", "--no-pager", "diff", "--no-index", p, p'] ""
+  -- P.readProcess "eza" ["--color=always", "src"] ""
+  (_, stdout, _) <- P.readProcessWithExitCode "delta" [p, p'] ""
+  -- (_, stdout, _) <- P.readProcessWithExitCode "git" ["-c", "color.diff=always", "--no-pager", "diff", "--no-index", p, p'] ""
+  pure stdout
 
 data Expect = Expect
   { expectContents :: String,
@@ -180,16 +125,60 @@ expect =
       TH.quoteDec = \_ -> error "expect: quoteDec not implemented"
     }
 
-assertEq :: (HasCallStack) => Expect -> String -> IO ()
+assertEq :: (HasCallStack) => Expect -> String -> IO Result
 assertEq ex@Expect {..} actual = do
   if expectContents == actual
-    then return ()
+    then return (Result "" Success)
     else do
       MVar.withMVar rt $ \rt -> do
         shouldUpdate <- lookupEnv "UPDATE_EXPECT"
         case shouldUpdate of
           Just _ -> do
             update ex (T.pack actual) rt
+            pure $ Result "" Success
           Nothing -> do
-            diffString expectContents actual
-            evaluate $ error "expect differed with actual"
+            res <- diffString expectContents actual
+            pure $
+              Result
+                { resultInfo = "Expected did not match actual",
+                  resultStatus =
+                    Failure
+                      Nothing
+                      (ColorizedReason res)
+                }
+
+data ExpectExample = ExpectExample !Expect (IO Text)
+
+instance Example ExpectExample where
+  type Arg ExpectExample = ()
+  evaluateExample e = evaluateExample (\() -> e)
+
+instance Example (IO ExpectExample) where
+  type Arg (IO ExpectExample) = ()
+  evaluateExample e = evaluateExample (\() -> e)
+
+instance Example (arg -> IO ExpectExample) where
+  type Arg (arg -> IO ExpectExample) = arg
+  evaluateExample expectExampleWithArg _ action _ = do
+    ref <- newIORef (Result "" Success)
+    action $ \arg -> do
+      r <- runExpectExample =<< expectExampleWithArg arg
+      writeIORef ref r
+    readIORef ref
+
+instance Example (arg -> ExpectExample) where
+  type Arg (arg -> ExpectExample) = arg
+  evaluateExample expectExampleWithArg _ action _ = do
+    ref <- newIORef (Result "" Success)
+    action $ \arg -> do
+      r <- runExpectExample $ expectExampleWithArg arg
+      writeIORef ref r
+    readIORef ref
+
+runExpectExample :: ExpectExample -> IO Result
+runExpectExample (ExpectExample ex actual) = do
+  actual' <- actual
+  assertEq ex (T.unpack actual')
+
+test :: Expect -> IO Text -> SpecWith (Arg ExpectExample)
+test ex actual = it "expect" (ExpectExample ex actual)
