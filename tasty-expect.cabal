@@ -12,9 +12,7 @@ extra-doc-files:    CHANGELOG.md
 common common
     ghc-options: -Wall
     build-depends:
-        filepath,
         directory,
-        process,
         typed-process,
         temporary,
         text,

@@ -11,8 +11,6 @@ module Test.Tasty.Expect
   )
 where
 
-import Control.Exception qualified as Exception
-import Control.Monad (unless)
 import Control.Monad qualified as Monad
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B.Char8
@@ -21,7 +19,7 @@ import Data.Char qualified as Char
 import Data.Foldable (for_)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromJust)
+import Data.Maybe qualified as Maybe
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -34,9 +32,9 @@ import Language.Haskell.TH qualified as TH
 import Language.Haskell.TH.Quote qualified as TH
 import Language.Haskell.TH.Syntax qualified as TH
 import Options.Applicative qualified as O
+import System.Directory qualified as Directory
 import System.IO qualified as IO
-import System.IO.Temp (withSystemTempFile)
-import System.Process qualified as P
+import System.IO.Temp qualified as Temp
 import System.Process.Typed
 import Test.Tasty.Expect.Internal
 import Test.Tasty.Ingredients qualified as Tasty
@@ -88,7 +86,7 @@ data ExpectTest = ExpectTest !Expect !(IO Text)
 instance Tasty.IsTest ExpectTest where
   testOptions = pure []
 
-  run options (ExpectTest expect action) _progress = do
+  run _options (ExpectTest expect action) _progress = do
     actual <- action
     let exContents = unescape (T.pack (expectContents expect))
     if exContents == (actual)
@@ -98,7 +96,7 @@ instance Tasty.IsTest ExpectTest where
           Tasty.testFailedDetails
             "Expected did not match actual"
             ( Tasty.ResultDetailsPrinter $
-                \indent consoleFormat -> do
+                \indent _consoleFormat -> do
                   output <- diffString (T.unpack exContents) (T.unpack actual) runDelta
                   output <- pure $ BL.toStrict output
                   let lines = B.Char8.lines output
@@ -110,49 +108,45 @@ instance Tasty.IsTest ExpectTest where
 
 diffString :: String -> String -> (FilePath -> FilePath -> IO a) -> IO a
 diffString s s' f = do
-  withSystemTempFile "expect" $ \fp h -> do
+  Temp.withSystemTempFile "expect" $ \fp h -> do
     IO.hPutStr h (s ++ "\n")
     IO.hClose h
-    withSystemTempFile "expect" $ \fp' h' -> do
+    Temp.withSystemTempFile "expect" $ \fp' h' -> do
       IO.hPutStr h' (s' ++ "\n")
       IO.hClose h'
       f fp fp'
 
-runGitDiff :: FilePath -> FilePath -> IO ()
-runGitDiff p p' = do
-  _ <-
-    Exception.try @Exception.SomeException $
-      P.callProcess
-        "git"
-        [ "-c",
-          "color.diff=always",
-          "--no-pager",
-          "diff",
-          "--no-index",
-          p,
-          p'
-        ]
-  _ <-
-    Exception.try @Exception.SomeException $
-      P.callProcess
-        "delta"
-        [p, p']
-  pure ()
-
 runDelta :: FilePath -> FilePath -> IO BL.ByteString
 runDelta p p' = do
-  (exit, stdout, _) <- readProcess $ deltaProc p p'
+  res <-
+    findM
+      ( \(name, proc) -> do
+          p <- Directory.findExecutable name
+          pure $ proc <$ p
+      )
+      [ ( "delta",
+          do
+            proc "delta" [p, p']
+        ),
+        ( "git",
+          do
+            proc "git" [p, p']
+        )
+      ]
+  p <- case res of
+    Nothing -> error "could not find any diff tool"
+    Just p -> pure p
+  (exit, stdout, _) <- readProcess p
   pure stdout
 
-deltaProc p p' = proc "delta" [p, p']
-
-runGitDiff' :: FilePath -> FilePath -> IO String
-runGitDiff' p p' = do
-  -- P.readProcess "git" ["-c", "color.diff=always", "--no-pager", "diff", "--no-index", p, p'] ""
-  -- P.readProcess "eza" ["--color=always", "src"] ""
-  (_, stdout, _) <- P.readProcessWithExitCode "delta" [p, p'] ""
-  -- (_, stdout, _) <- P.readProcessWithExitCode "git" ["-c", "color.diff=always", "--no-pager", "diff", "--no-index", p, p'] ""
-  pure stdout
+findM :: (Foldable t, Monad m) => (a -> m (Maybe b)) -> t a -> m (Maybe b)
+findM f = foldr go (pure Nothing)
+  where
+    go x acc = do
+      res <- f x
+      case res of
+        Just _ -> pure res
+        Nothing -> acc
 
 newtype ExpectOption = ExpectOption Bool
 
@@ -165,7 +159,7 @@ instance Tasty.IsOption ExpectOption where
 
 assertIO :: (HasCallStack) => Bool -> IO ()
 assertIO x =
-  unless x $ error "assertion failed"
+  Monad.unless x $ error "assertion failed"
 
 applyPatch :: Expect -> Text -> Text -> IO Text
 applyPatch ex replace fileContents = do
@@ -185,7 +179,7 @@ applyPatch ex replace fileContents = do
         T.concat before
           <> prev
           <> replace
-          <> fromJust
+          <> Maybe.fromJust
             ( T.stripPrefix
                 (T.pack (expectContents ex))
                 (rest <> T.concat linesAfterStart)
