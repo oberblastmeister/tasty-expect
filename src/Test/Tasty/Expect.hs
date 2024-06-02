@@ -1,22 +1,24 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# OPTIONS_GHC -Wno-name-shadowing #-}
 
 module Test.Tasty.Expect
   ( expectIngredient,
     expect,
     test,
+    updateExpects,
   )
 where
 
 import Control.Exception qualified as Exception
 import Control.Monad (unless)
+import Control.Monad qualified as Monad
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B.Char8
 import Data.ByteString.Lazy qualified as BL
 import Data.Char qualified as Char
 import Data.Foldable (for_)
-import Data.Function ((&))
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromJust)
@@ -163,11 +165,10 @@ assertIO :: (HasCallStack) => Bool -> IO ()
 assertIO x =
   unless x $ error "assertion failed"
 
-update :: Expect -> Text -> IO ()
-update ex new = do
+applyPatch :: Expect -> Text -> Text -> IO Text
+applyPatch ex replace fileContents = do
   let (subtract 1 -> startLine, subtract 1 -> startChar) = expectStart ex
       (subtract 1 -> endLine, subtract 1 -> endChar) = expectEnd ex
-  fileContents <- T.IO.readFile (expectFile ex)
   let fileLines = fmap (<> "\n") (T.lines fileContents)
   let fileLinesLen = length fileLines
   assertIO $ startLine <= endLine
@@ -177,19 +178,18 @@ update ex new = do
     (lineStart : linesAfterStart) -> do
       assertIO (startChar < T.length lineStart)
       let (prev, rest) = T.splitAt startChar lineStart
-      -- putStrLn $ "lineStart: " <> show lineStart
-      -- putStrLn $ "rest: " <> show rest
+      -- TODO: do some extra checks here
       pure $
         T.concat before
           <> prev
-          <> new
+          <> replace
           <> fromJust
             ( T.stripPrefix
                 (T.pack (expectContents ex))
                 (rest <> T.concat linesAfterStart)
             )
     _ -> error "wrong"
-  T.IO.writeFile (expectFile ex) res
+  pure res
 
 expectIngredient :: Tasty.Ingredient
 expectIngredient = Tasty.TestManager [Tasty.Option (Proxy @ExpectOption)] $ \options testTree ->
@@ -199,32 +199,41 @@ expectIngredient = Tasty.TestManager [Tasty.Option (Proxy @ExpectOption)] $ \opt
       then
         Just
           ( do
-              let expects = collectExpectTests options testTree
-              patches <- for expects $ \(ExpectTest ex act) -> do
-                contents <- act
-                pure (ex, contents)
-              let patchesByFile = Map.fromListWith (<>) $ fmap (\(ex, contents) -> (expectFile ex, [(ex, contents)])) patches
-              for_ (Map.toList patchesByFile) $ \(_, patches) -> do
-                let patchesSorted =
-                      List.sortBy
-                        ( \(ex1, _) (ex2, _) ->
-                            let s1 = expectStart ex1
-                                s2 = expectStart ex2
-                             in compare (fst s1) (fst s1) <> compare (snd s2) (snd s2)
-                        )
-                        patches
-                for_ patchesSorted $ \(ex, contents) -> do
-                  update ex contents
-
+              updateExpects options testTree
               pure True
           )
       else Nothing
+
+updateExpects :: Tasty.OptionSet -> Tasty.TestTree -> IO ()
+updateExpects options testTree = do
+  let expects = collectExpectTests options testTree
+  patches <- for expects $ \(ExpectTest ex act) -> do
+    contents <- act
+    pure (ex, contents)
+  let patchesByFile = Map.fromListWith (<>) $ fmap (\(ex, contents) -> (expectFile ex, [(ex, contents)])) patches
+  for_ (Map.toList patchesByFile) $ \(filePath, patches) -> do
+    fileContents <- T.IO.readFile filePath
+    let patchesSorted =
+          List.sortBy
+            ( \(ex1, _) (ex2, _) ->
+                let s1 = expectStart ex1
+                    s2 = expectStart ex2
+                 in compare (fst s1) (fst s1) <> compare (snd s2) (snd s2)
+            )
+            patches
+    newFileContents <-
+      Monad.foldM
+        (\acc (ex, contents) -> applyPatch ex contents acc)
+        fileContents
+        patchesSorted
+    Monad.when (fileContents /= newFileContents) $ do
+      T.IO.writeFile filePath newFileContents
 
 collectExpectTests :: Tasty.OptionSet -> Tasty.TestTree -> [ExpectTest]
 collectExpectTests options testTree =
   Tasty.foldTestTree
     ( Tasty.trivialFold
-        { Tasty.foldSingle = \options name test ->
+        { Tasty.foldSingle = \_options _name test ->
             case Typeable.cast @_ @ExpectTest test of
               Nothing -> []
               Just ex -> [ex]
@@ -233,23 +242,9 @@ collectExpectTests options testTree =
     options
     testTree
 
--- pure $ Tasty.allTests options testTree
-
--- | Safe read function. Defined here for convenience to use for
--- 'parseValue'.
---
--- @since 0.1
-safeRead :: (Read a) => String -> Maybe a
-safeRead s
-  | [(x, "")] <- reads s = Just x
-  | otherwise = Nothing
-
--- | Parse a 'Bool' case-insensitively.
---
--- @since 1.0.1
 safeReadBool :: String -> Maybe Bool
 safeReadBool s =
-  case (map Char.toLower s) of
+  case map Char.toLower s of
     "true" -> Just True
     "false" -> Just False
     _ -> Nothing

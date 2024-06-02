@@ -23,6 +23,9 @@ common common
         tasty,
         optparse-applicative,
         containers,
+    default-language: GHC2021
+    default-extensions:
+        OverloadedStrings
 
 common rtsopts
   ghc-options:
@@ -33,28 +36,23 @@ common rtsopts
 library
     import:           common
     exposed-modules:
-        MyLib,
-        Test.Hspec.Expect,
         Test.Tasty.Expect
+        Test.Tasty.Expect.Internal
     build-depends:
         base >=4.18.2.0,
         template-haskell,
     hs-source-dirs:   src
-    default-language: GHC2021
 
-test-suite hspec-expect-test2
+test-suite hspec-expect-test
     import:           common, rtsopts
-    default-language: GHC2021
-
     -- Modules included in this executable, other than Main.
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
     type:             exitcode-stdio-1.0
-    hs-source-dirs:   test2
+    hs-source-dirs:   test
     main-is:          Main.hs
     other-modules:
-        ExpectSpec
     build-depends:
         base >=4.18.2.0,
         hspec-expect,
