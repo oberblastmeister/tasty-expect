@@ -59,6 +59,13 @@ g|]
         ]
     ]
 
+testing =
+  [expect|
+    first
+    second
+    third
+|]
+
 escapingTests =
   testGroup
     "Escaping"

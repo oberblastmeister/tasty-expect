@@ -133,7 +133,7 @@ assertEq :: (HasCallStack) => Expect -> String -> IO Result
 assertEq ex@Expect {..} actual = do
   putStrLn "hello world"
   if expectContents == actual
-    then do 
+    then do
       MVar.modifyMVar_ rt $ \rt -> do
         putStrLn $ "hit: " ++ show (hit rt)
         pure (rt {hit = hit rt + 1})

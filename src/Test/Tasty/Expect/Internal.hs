@@ -1,15 +1,12 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE LambdaCase #-}
+{-# OPTIONS_GHC -Wno-name-shadowing #-}
 
-module Test.Tasty.Expect.Internal
-  ( Token (..),
-    lexTokens,
-    tokensToText,
-    unescape,
-    escape,
-  )
-where
+module Test.Tasty.Expect.Internal where
 
+import Data.Function ((&))
+import Data.Functor.Identity
+import Data.Maybe qualified as Maybe
 import Data.Text (Text)
 import Data.Text qualified as T
 
@@ -51,3 +48,39 @@ escape = tokensToText . fmap (bumpQuoteEnd 1) . lexTokens
 
 unescape :: Text -> Text
 unescape = tokensToText . fmap (bumpQuoteEnd (-1)) . lexTokens
+
+splitLinesWithEnd :: Text -> [Text]
+splitLinesWithEnd t =
+  lines
+    & zip [0 :: Int ..]
+    & map (\(i, l) -> if i == linesLen - 1 then l else l <> "\n")
+  where
+    lines = T.splitOn "\n" t
+    linesLen = length lines
+
+splitLines :: Text -> [Text]
+splitLines = T.splitOn "\n"
+
+-- trimIndent :: Text -> Text
+-- trimIndent t = runIdentity do
+--   t <- pure $ Maybe.fromMaybe t $ T.stripPrefix "\n" t
+--   let indent =
+--         splitLines t
+--           & filter (T.null . T.strip)
+--           & map (\t -> T.length t - T.length (T.stripStart t))
+--           & safeMinimum
+--           & Maybe.fromMaybe 0
+--   pure $
+--     splitLines t
+--       & map (\t -> if T.null (T.strip t) then t else T.drop indent t)
+--       & T.concat
+
+--   [expect||
+--     first
+--     second
+--     third
+--   ]
+
+safeMinimum :: (Ord a) => [a] -> Maybe a
+safeMinimum [] = Nothing
+safeMinimum xs = Just $ minimum xs
