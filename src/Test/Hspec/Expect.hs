@@ -32,10 +32,14 @@ import System.IO.Unsafe (unsafePerformIO)
 import System.Process qualified as P
 import Test.Hspec.Core.Spec
 
+-- keep track of a map from files to contents and patches that were applied
+-- when applying a new patch, make sure to map from the previous patches
 data Runtime = Runtime
+  { hit :: !Int
+  }
 
 rt :: MVar Runtime
-rt = unsafePerformIO $ MVar.newMVar Runtime
+rt = unsafePerformIO $ MVar.newMVar (Runtime {hit = 0})
 {-# NOINLINE rt #-}
 
 assertIO :: (HasCallStack) => Bool -> IO ()
@@ -127,25 +131,33 @@ expect =
 
 assertEq :: (HasCallStack) => Expect -> String -> IO Result
 assertEq ex@Expect {..} actual = do
+  putStrLn "hello world"
   if expectContents == actual
-    then return (Result "" Success)
+    then do 
+      MVar.modifyMVar_ rt $ \rt -> do
+        putStrLn $ "hit: " ++ show (hit rt)
+        pure (rt {hit = hit rt + 1})
+      return (Result "" Success)
     else do
-      MVar.withMVar rt $ \rt -> do
+      MVar.modifyMVar rt $ \rt -> do
+        putStrLn $ "hit: " ++ show (hit rt)
         shouldUpdate <- lookupEnv "UPDATE_EXPECT"
         case shouldUpdate of
           Just _ -> do
             update ex (T.pack actual) rt
-            pure $ Result "" Success
+            pure (rt {hit = hit rt + 1}, Result "" Success)
           Nothing -> do
             res <- diffString expectContents actual
-            pure $
-              Result
-                { resultInfo = "Expected did not match actual",
-                  resultStatus =
-                    Failure
-                      Nothing
-                      (ColorizedReason res)
-                }
+            pure
+              ( rt {hit = hit rt + 1},
+                Result
+                  { resultInfo = "Expected did not match actual",
+                    resultStatus =
+                      Failure
+                        Nothing
+                        (ColorizedReason res)
+                  }
+              )
 
 data ExpectExample = ExpectExample !Expect (IO Text)
 
