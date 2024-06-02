@@ -29,6 +29,7 @@ import Data.Text.IO qualified as T.IO
 import Data.Traversable (for)
 import Data.Typeable (Typeable)
 import Data.Typeable qualified as Typeable
+import GHC.Stack (HasCallStack)
 import Language.Haskell.TH qualified as TH
 import Language.Haskell.TH.Quote qualified as TH
 import Language.Haskell.TH.Syntax qualified as TH
@@ -37,7 +38,7 @@ import System.IO qualified as IO
 import System.IO.Temp (withSystemTempFile)
 import System.Process qualified as P
 import System.Process.Typed
-import Test.Hspec.Core.Spec
+import Test.Tasty.Expect.Internal
 import Test.Tasty.Ingredients qualified as Tasty
 import Test.Tasty.Options qualified as Tasty
 import Test.Tasty.Providers qualified as Tasty
@@ -89,7 +90,8 @@ instance Tasty.IsTest ExpectTest where
 
   run options (ExpectTest expect action) _progress = do
     actual <- action
-    if T.pack (expectContents expect) == actual
+    let exContents = unescape (T.pack (expectContents expect))
+    if exContents == (actual)
       then pure $ Tasty.testPassed ""
       else
         pure $
@@ -97,7 +99,7 @@ instance Tasty.IsTest ExpectTest where
             "Expected did not match actual"
             ( Tasty.ResultDetailsPrinter $
                 \indent consoleFormat -> do
-                  output <- diffString (expectContents expect) (T.unpack actual) runDelta
+                  output <- diffString (T.unpack exContents) (T.unpack actual) runDelta
                   output <- pure $ BL.toStrict output
                   let lines = B.Char8.lines output
                   let indentation = B.Char8.replicate (2 + 2 * indent) ' '
@@ -208,8 +210,8 @@ updateExpects :: Tasty.OptionSet -> Tasty.TestTree -> IO ()
 updateExpects options testTree = do
   let expects = collectExpectTests options testTree
   patches <- for expects $ \(ExpectTest ex act) -> do
-    contents <- act
-    pure (ex, contents)
+    patch <- act
+    pure (ex, escape patch)
   let patchesByFile = Map.fromListWith (<>) $ fmap (\(ex, contents) -> (expectFile ex, [(ex, contents)])) patches
   for_ (Map.toList patchesByFile) $ \(filePath, patches) -> do
     fileContents <- T.IO.readFile filePath
@@ -223,7 +225,7 @@ updateExpects options testTree = do
             patches
     newFileContents <-
       Monad.foldM
-        (\acc (ex, contents) -> applyPatch ex contents acc)
+        (\acc (ex, patch) -> applyPatch ex patch acc)
         fileContents
         patchesSorted
     Monad.when (fileContents /= newFileContents) $ do

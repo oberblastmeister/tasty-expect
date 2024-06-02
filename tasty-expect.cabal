@@ -1,5 +1,5 @@
 cabal-version:      3.4
-name:               hspec-expect
+name:               tasty-expect
 version:            0.1.0.0
 license:            MIT
 license-file:       LICENSE
@@ -12,7 +12,6 @@ extra-doc-files:    CHANGELOG.md
 common common
     ghc-options: -Wall
     build-depends:
-        hspec-core,
         filepath,
         directory,
         process,
@@ -43,7 +42,7 @@ library
         template-haskell,
     hs-source-dirs:   src
 
-test-suite hspec-expect-test
+test-suite tasty-expect-test
     import:           common, rtsopts
     -- Modules included in this executable, other than Main.
 
@@ -55,7 +54,6 @@ test-suite hspec-expect-test
     other-modules:
     build-depends:
         base >=4.18.2.0,
-        hspec-expect,
+        tasty-expect,
         tasty-hunit,
-        hspec,
-    build-tool-depends: hspec-discover:hspec-discover
+        tasty-quickcheck,

@@ -44,7 +44,7 @@ tokensToText :: [Token] -> Text
 tokensToText =
   T.concat . map \case
     Text t -> t
-    QuoteEnd n -> "|" <> T.replicate n "~" <> ""
+    QuoteEnd n -> "|" <> T.replicate n "~" <> "]"
 
 escape :: Text -> Text
 escape = tokensToText . fmap (bumpQuoteEnd 1) . lexTokens
