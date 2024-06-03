@@ -59,13 +59,6 @@ g|]
         ]
     ]
 
-testing =
-  [expect|
-    first
-    second
-    third
-|]
-
 escapingTests =
   testGroup
     "Escaping"
@@ -82,3 +75,4 @@ escapingTests =
       QC.testProperty "unescape . escape = id" \s ->
         unescape (escape (T.pack s)) == (T.pack s)
     ]
+    

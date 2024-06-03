@@ -5,8 +5,6 @@
 module Test.Tasty.Expect.Internal where
 
 import Data.Function ((&))
-import Data.Functor.Identity
-import Data.Maybe qualified as Maybe
 import Data.Text (Text)
 import Data.Text qualified as T
 
@@ -29,7 +27,7 @@ lexTokens t =
       Just ('|', afterBar) -> do
         let (tildes, afterTildes) = T.span (== '~') afterBar
             tildesLen = T.length tildes
-            currentText = (beforeBar <> "|" <> tildes)
+            currentText = beforeBar <> "|" <> tildes
         case T.uncons afterTildes of
           Just (']', rest) -> Text beforeBar : QuoteEnd tildesLen : lexTokens rest
           Just (_, _) -> Text currentText : lexTokens afterTildes

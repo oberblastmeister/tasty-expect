@@ -20,6 +20,8 @@ common common
         tasty,
         optparse-applicative,
         containers,
+        exceptions,
+        unliftio,
     default-language: GHC2021
     default-extensions:
         OverloadedStrings

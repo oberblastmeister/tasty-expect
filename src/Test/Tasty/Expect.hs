@@ -1,3 +1,4 @@
+{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ViewPatterns #-}
@@ -19,7 +20,6 @@ import Data.Char qualified as Char
 import Data.Foldable (for_)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
-import Data.Maybe qualified as Maybe
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -27,7 +27,6 @@ import Data.Text.IO qualified as T.IO
 import Data.Traversable (for)
 import Data.Typeable (Typeable)
 import Data.Typeable qualified as Typeable
-import GHC.Stack (HasCallStack)
 import Language.Haskell.TH qualified as TH
 import Language.Haskell.TH.Quote qualified as TH
 import Language.Haskell.TH.Syntax qualified as TH
@@ -42,6 +41,7 @@ import Test.Tasty.Options qualified as Tasty
 import Test.Tasty.Providers qualified as Tasty
 import Test.Tasty.Providers.ConsoleFormat qualified as Tasty
 import Test.Tasty.Runners qualified as Tasty
+import UnliftIO.Exception qualified as Exception
 
 data Expect = Expect
   { expectContents :: String,
@@ -97,7 +97,7 @@ instance Tasty.IsTest ExpectTest where
             "Expected did not match actual"
             ( Tasty.ResultDetailsPrinter $
                 \indent _consoleFormat -> do
-                  output <- diffString (T.unpack exContents) (T.unpack actual) runDelta
+                  output <- diffText exContents actual runDelta
                   output <- pure $ BL.toStrict output
                   let lines = B.Char8.lines output
                   let indentation = B.Char8.replicate (2 + 2 * indent) ' '
@@ -106,13 +106,13 @@ instance Tasty.IsTest ExpectTest where
                   B.putStr output'
             )
 
-diffString :: String -> String -> (FilePath -> FilePath -> IO a) -> IO a
-diffString s s' f = do
+diffText :: Text -> Text -> (FilePath -> FilePath -> IO a) -> IO a
+diffText s s' f = do
   Temp.withSystemTempFile "expect" $ \fp h -> do
-    IO.hPutStr h (s ++ "\n")
+    T.IO.hPutStr h (s <> "\n")
     IO.hClose h
     Temp.withSystemTempFile "expect" $ \fp' h' -> do
-      IO.hPutStr h' (s' ++ "\n")
+      T.IO.hPutStr h' (s' <> "\n")
       IO.hClose h'
       f fp fp'
 
@@ -157,34 +157,42 @@ instance Tasty.IsOption ExpectOption where
   optionHelp = return "Update expect tests"
   optionCLParser = Tasty.mkFlagCLParser (O.short 'u') (ExpectOption True)
 
-assertIO :: (HasCallStack) => Bool -> IO ()
-assertIO x =
-  Monad.unless x $ error "assertion failed"
-
-applyPatch :: Expect -> Text -> Text -> IO Text
+applyPatch :: Expect -> Text -> Text -> Either Text Text
 applyPatch ex replace fileContents = do
   let (subtract 1 -> startLine, subtract 1 -> startChar) = expectStart ex
       (subtract 1 -> endLine, subtract 1 -> endChar) = expectEnd ex
-  let fileLines = fmap (<> "\n") (T.lines fileContents)
+  let fileLines = fmap (<> "\n") $ T.lines fileContents
   let fileLinesLen = length fileLines
-  assertIO $ startLine <= endLine
-  assertIO $ startLine < fileLinesLen
+  Monad.unless (startLine <= endLine && startLine < fileLinesLen) do
+    Left $
+      T.pack $
+        "Invalid expect start line, startLine: "
+          ++ show startLine
+          ++ ", endLine: "
+          ++ show endLine
+          ++ ", fileLinesLen: "
+          ++ show fileLinesLen
   let (before, after) = splitAt startLine fileLines
   res <- case after of
     (lineStart : linesAfterStart) -> do
-      assertIO (startChar < T.length lineStart)
+      Monad.unless (startChar < T.length lineStart) do
+        Left $
+          T.pack $
+            "Invalid expect start char, startChar: "
+              ++ show startChar
+              ++ ", lineStart: "
+              ++ T.unpack lineStart
       let (prev, rest) = T.splitAt startChar lineStart
-      -- TODO: do some extra checks here
-      pure $
-        T.concat before
-          <> prev
-          <> replace
-          <> Maybe.fromJust
-            ( T.stripPrefix
-                (T.pack (expectContents ex))
-                (rest <> T.concat linesAfterStart)
-            )
-    _ -> error "wrong"
+      let textFromStartChar = rest <> T.concat linesAfterStart
+      case T.stripPrefix (T.pack (expectContents ex)) textFromStartChar of
+        Nothing -> Left $ "Expect contents not found for: " <> T.pack (expectContents ex)
+        Just res -> do
+          pure $
+            T.concat before
+              <> prev
+              <> replace
+              <> res
+    _ -> error "unreachable"
   pure res
 
 expectIngredient :: Tasty.Ingredient
@@ -209,21 +217,28 @@ updateExpects options testTree = do
   let patchesByFile = Map.fromListWith (<>) $ fmap (\(ex, contents) -> (expectFile ex, [(ex, contents)])) patches
   for_ (Map.toList patchesByFile) $ \(filePath, patches) -> do
     fileContents <- T.IO.readFile filePath
+    -- applying the patches in descending order so that
+    -- applying a patch doesn't affect the positions of other patches
     let patchesSorted =
-          List.sortBy
-            ( \(ex1, _) (ex2, _) ->
-                let s1 = expectStart ex1
-                    s2 = expectStart ex2
-                 in compare (fst s1) (fst s1) <> compare (snd s2) (snd s2)
-            )
-            patches
-    newFileContents <-
-      Monad.foldM
-        (\acc (ex, patch) -> applyPatch ex patch acc)
-        fileContents
-        patchesSorted
-    Monad.when (fileContents /= newFileContents) $ do
-      T.IO.writeFile filePath newFileContents
+          reverse $
+            List.sortBy
+              ( \(ex1, _) (ex2, _) ->
+                  let s1 = expectStart ex1
+                      s2 = expectStart ex2
+                   in compare (fst s1) (fst s2) <> compare (snd s1) (snd s2)
+              )
+              patches
+    let newFileContents =
+          Monad.foldM
+            (\acc (ex, patch) -> applyPatch ex patch acc)
+            fileContents
+            patchesSorted
+    case newFileContents of
+      Left err -> do
+        Exception.throwString $ "error: " <> T.unpack err
+      Right newFileContents -> do
+        Monad.when (fileContents /= newFileContents) $ do
+          T.IO.writeFile filePath newFileContents
 
 collectExpectTests :: Tasty.OptionSet -> Tasty.TestTree -> [ExpectTest]
 collectExpectTests options testTree =
