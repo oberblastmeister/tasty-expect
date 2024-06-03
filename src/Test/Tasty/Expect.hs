@@ -9,6 +9,7 @@ module Test.Tasty.Expect
     expect,
     test,
     updateExpects,
+    Expect (..),
   )
 where
 
